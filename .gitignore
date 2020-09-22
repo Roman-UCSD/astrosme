@@ -1,3 +1,7 @@
+# Custom rules
+/production
+/demo_circular.ipynb
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
