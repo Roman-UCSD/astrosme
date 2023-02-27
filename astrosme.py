@@ -98,7 +98,7 @@ def mcmc_regression(likelihood, proposal, trials, n_dim, n_walkers, n_threads, s
         print('\nExecuting trials...')
     with multiprocessing.Pool(processes = n_threads) as pool:
         sampler = emcee.EnsembleSampler(n_walkers, n_dim, likelihood, pool=pool, moves = emcee.moves.GaussianMove(proposal ** 2.0))
-        sampler.run_mcmc(pos, trials / n_walkers, progress = show_progress)
+        sampler.run_mcmc(pos, trials // n_walkers, progress = show_progress)
     if show_progress:
         print('\n All done!')
     
@@ -1272,7 +1272,7 @@ class Universe:
         return result
         
 
-    def pol_max(self, ra, dec, instrument, z, psi = False, pol_z = 1.0, telescope = True, analytic = True):
+    def pol_max(self, ra, dec, instrument, z, psi = False, pol_z = 1.0, telescope = True, analytic = True, return_V = False):
         """
         Predict maximum polarization fraction allowed within this universe for a given source as observed through
         a given instrument.
@@ -1288,6 +1288,9 @@ class Universe:
         of magnitude); however, it is more robust and can be used in unit tests. The numerical algorithm may also yield
         a slightly higher precision (typically, in the fourth decimal place or so).
 
+        Additionally, the minimum allowed circular polarization (normalized Stokes V) at the telescope may also be calculated
+        by setting "return_V" to True. In this case, the source is assumed to have no circular polarization at all wavelengths
+
         arguments
             ra                      :   Right ascension on the celestial sphere in degrees, 0<=ra<=360
             dec                     :   Declination on the celestial sphere in degrees, -90<=dec<=90
@@ -1302,9 +1305,13 @@ class Universe:
             telescope               :   See "psi". Unneeded in CPT-odd universes
             analytic                :   If True, use an analytic formula (fast). Otherwise, simulate photon exchange
                                         numerically (slow). Defaults to True
+            return_V                :   If True, return the normalized minimum circular polarization (Stokes V) corresponding
+                                        to the calculated maximum linear polarization. Defaults to False
         
         returns
-            Maximum observable (linear) polarization fraction from the given source through the given instrument
+            pol                     :   Maximum observable (linear) polarization fraction from the given source through
+                                        the given instrument
+            V                       :   Only returned if return_V is True. Corresponding normalized Stokes V
         """
         # Quick check to avoid silly mistakes...
         if instrument.get_d() != self.__d:
@@ -1324,43 +1331,73 @@ class Universe:
                     # this paper treats all Stokes parameters in a rotated basis: psi' = psi - (xi/2).
                     # Q_z, U_z, Q_m and U_m below are expressed in this basis and, hence, do not follow the standard
                     # definition of Stokes parameters
-                    Q_z, U_z = my_universe.polpsi_to_QU(pol_z, psi - xi / 2.0)
+                    Q_z, U_z = self.polpsi_to_QU(pol_z, psi - xi / 2.0)
                 else:
                     # In the CPT-even case, we use equation 35 of Kislat 2018 to convert from observer to source.
                     # First, express the value of "psi" given to us in the rotated (primed) basis
                     psi = psi - xi / 2.0
                     # Now apply an inverted form of equation 35. Note that the inversion introduces a sign ambiguity
-                    # that must be resolved by considering the sign of Q_z. We ignore this ambiguity and, hence, may
-                    # be getting the sign of U_z wrong. This does not matter, as we will take a square of it when computing
-                    # the final result! The numerical algorithm given below does not have this issue.
+                    # in both Q_z and U_z, which we ignore here as we only need their absolute values to calculate
+                    # the polarization fraction. Therefore, the signs of U_z and Q_z calculated here may be wrong,
+                    # but the output should be correct
                     x = np.tan(2 * np.radians(psi))
                     U_z = pol_z * x / np.sqrt(1 - 2 * F + F ** 2.0 + x ** 2.0)
                     # Finally, get Q from U and total polarization
                     if np.abs(U_z) > pol_z:
-                        warnings.warn('Detected unphysical U_z value, {}. Corrected to {}'.format(U_z, np.sign(U_z) * pol_z))
+                        # warnings.warn('Detected unphysical U_z value, {}. Corrected to {}'.format(U_z, np.sign(U_z) * pol_z))
                         U_z = np.sign(U_z) * pol_z
                     Q_z = np.sqrt(pol_z ** 2.0 - U_z ** 2.0)
                 # Apply equations 30 and 31 of Kislat 2018 to convert back to observer
                 Q_m = Q_z
                 U_m = U_z * (1 - F)
-                return np.sqrt(Q_m ** 2.0 + U_m ** 2.0)
+                result = np.sqrt(Q_m ** 2.0 + U_m ** 2.0)
+                if return_V:
+                    # If V is necessary then the sign ambiguity in calculated Q_z and U_z (and hence Q_m and U_m) must be
+                    # addressed. The rotated (primed) basis has the axis of birefringence aligned with the Q-axis in the Stokes
+                    # space, which means that the sign of Q_z is still irrelevant when determining V at the observer. The sign
+                    # of U_z however would change the sign of V, so we need to know it
+                    if telescope:
+                        # Assume that U_z is positive. Evaluate the sign of equation 35 and compare it to the sign of psi
+                        # (after psi is shifted to the standard range between -90 and 90). If they match then the assumption
+                        # of U_z being positive is correct...
+                        if np.sign(np.arctan2(U_z * (1 - F) , 1.0)) == np.sign((psi + 90) % 180 - 90):
+                            sign = +1
+                        else:
+                        # Otherwise, U_z is negative
+                            sign = -1
+                    else:
+                        # If we are given pzi_z at the source instead of telescope than the calculations that introduced the sign
+                        # ambiguity in U_z and Q_z never took place, so we can keep all signs as they are
+                        sign = +1
+                    # For V_z=0, V_m = -0.5 * G * U_z which may be inferred from the form of the Muller matrix
+                    G = instrument.G(theta)
+                    V_m = - 0.5 * G * sign * U_z
+                    return result, V_m
+                return result
 
             else:
                 # The CPT-odd case is drastically easier, as there is no dependence on the polarization angle.
                 # We follow the same procedure as Kislat 2018 in the CPT-even case, but adapted to CPT-odd universes.
                 # Effectively, below is a modified version of equation 34
                 G = instrument.G(theta)
-                return pol_z * np.sqrt((1 - F) ** 2.0 + 0.25 * G ** 2.0)
+                result = pol_z * np.sqrt((1 - F) ** 2.0 + 0.25 * G ** 2.0)
+                if return_V:
+                    return result, 0.0
+                else:
+                    return result
 
         else:
             # For the numerical method, we simply use receive_photon() to simulate the entire photon exchange.
             # First, define a function that estimates Q and U (in normal, unprimed frame) at the telescope given
             # some polarization angle at the source
-            def predict_QU(psi_z):
-                response = self.receive_photon(ra = ra, dec = dec, z = z, E = instrument.E, psi = psi_z, polarization_fraction = pol_z)
-                Q_m, U_m = self.polpsi_to_QU(*response[::-1])
+            def predict_QU(psi_z, return_V = False):
+                response = self.receive_photon(ra = ra, dec = dec, z = z, E = instrument.E, psi = psi_z, polarization_fraction = pol_z, V = 0.0)
+                Q_m, U_m = self.polpsi_to_QU(*response[:2][::-1])
                 Q_m = instrument.integrate(instrument.E, instrument.t * Q_m) / instrument.N
                 U_m = instrument.integrate(instrument.E, instrument.t * U_m) / instrument.N
+                if return_V:
+                    V_m = instrument.integrate(instrument.E, instrument.t * response[2]) / instrument.N
+                    return Q_m, U_m, V_m
                 return Q_m, U_m
             # Rotate polarization angle into standard quadrant, such that -90<=psi<=90
             psi = (psi + 90) % 180 - 90
@@ -1368,15 +1405,16 @@ class Universe:
                 psi_z = psi
             else:
                 # Use SciPy's minimize() to invert predict_QU() and work out psi at the source given observed psi
-                result = minimize(lambda x: np.abs(self.QU_to_polpsi(*predict_QU(x))[1] - psi), [0], bounds = [(-180, 180)])
+                result = minimize(lambda x: np.abs(self.QU_to_polpsi(*predict_QU(x))[1] - psi), [0], bounds = [(-180, 180)], method = 'Powell')
                 # The function runs into instabilities close to zero. If this is the case, just return 0
-                if result.fun < 1e-4:
-                    psi_z = result.x
-                else:
-                    return 0.0
-            Q_m, U_m = predict_QU(psi_z)
-            return np.sqrt(Q_m ** 2.0 + U_m ** 2.0)
-        
+                psi_z = result.x
+            if return_V:
+                Q_m, U_m, V_m = predict_QU(psi_z, return_V = True)
+                return np.sqrt(Q_m ** 2.0 + U_m ** 2.0), V_m
+            else:
+                Q_m, U_m = predict_QU(psi_z)
+                return np.sqrt(Q_m ** 2.0 + U_m ** 2.0)
+
 
     def compatibility(self, measurement_type, **measurement):
         """
@@ -1403,7 +1441,13 @@ class Universe:
             e_pol                   :   Standard error in "pol". Broadband only
             instrument              :   Initialized Instrument() object, representing the instrument carrying
                                         out the measurement. Broadband only
-            pol_z                   :   Assumed polarization at the source. Broadband only. Defaults to 1.0
+            pol_z                   :   Assumed polarization at the source. Broadband only. Defaults to the universe default
+                                        set at initialization. Unneeded if "e_V" is passed
+            e_V                     :   Error in the circular polarization measurement (normalized Stokes V) if available.
+                                        When provided, the passed value of "pol_z" is ignored and, instead, it is estimated
+                                        my maximizing the compatibility curve with respect to it. Broadband only
+            V                       :   Circular polarization measurement corresponding to the error "e_V". If not provided,
+                                        0.0 assumed. Broadband only
 
         returns
             Probability of compatibility
@@ -1424,6 +1468,34 @@ class Universe:
                 measurement['pol_z']
             except:
                 measurement['pol_z'] = self.pol_z
+            # If circular polarization is available, estimate the most conservative value of "pol_z". We do so using the
+            # minization routine from SciPy and recursive calls of this function
+            if 'e_V' in measurement.keys():
+                e_V = measurement['e_V']
+                del measurement['e_V']
+                del measurement['pol_z']
+                if 'V' in measurement.keys():
+                    V_val = measurement['V']
+                    del measurement['V']
+                else:
+                    V_val = 0.0
+                def func(pol_z):
+                    try:
+                        pol_z = pol_z[0]
+                    except:
+                        pass
+                    # Somehow the algorithm sometimes attempts to launch itself out of bounds. Prevent that here...
+                    if pol_z < 0.0 or pol_z > 1.0:
+                        return 99.9
+                    linear_prob = self.compatibility(measurement_type, **measurement, pol_z = pol_z)
+                    V = self.pol_max(measurement['ra'], measurement['dec'], measurement['instrument_V'], measurement['z'], measurement['psi'], pol_z, return_V = True)[1]
+                    circ_prob = np.where(V < V_val, norm.cdf(V, loc = V_val, scale = e_V), 1 - norm.cdf(V, loc = V_val, scale = e_V))
+                    return -linear_prob * circ_prob
+                # Sample the function at 100 points to determine a good initial guess
+                sample_pol_z = np.linspace(0, 1, 100)
+                sample_func = np.array(list(map(func, sample_pol_z)))
+                result = minimize(func, [sample_pol_z[sample_func == np.min(sample_func)][0]], bounds = [(0, 1.0)])
+                return -result.fun
             # Evaluate the maximum polarization fraction predicted by the SME model
             pol_max_sme = self.pol_max(measurement['ra'], measurement['dec'], measurement['instrument'], measurement['z'], measurement['psi'], measurement['pol_z'])
 
@@ -2002,8 +2074,8 @@ class Catalogue:
             return retrieved
         else:
             result = result[0]
-            retrieved['simbad_id'] = result['MAIN_ID'].decode('utf-8')
-            retrieved['type'] = result['OTYPE'].decode('utf-8')
+            retrieved['simbad_id'] = result['MAIN_ID']
+            retrieved['type'] = result['OTYPE']
             coord = SkyCoord(result['RA'] + " " + result['DEC'], unit=(u.hour, u.deg), frame='icrs')
             retrieved['ra'] = coord.ra.deg
             retrieved['dec'] = coord.dec.deg
@@ -2041,7 +2113,7 @@ class Catalogue:
                 ze = self.guess_redshift_error(z)
                 z_bibcode = 'NE/'
         if result['RVZ_BIBCODE'] != '':
-            z_bibcode += result['RVZ_BIBCODE'].decode('utf-8')
+            z_bibcode += result['RVZ_BIBCODE']
         else:
             z_bibcode = False
         retrieved['z'] = z; retrieved['z_err'] = ze; retrieved['z_bib'] = z_bibcode
@@ -2064,7 +2136,7 @@ class Catalogue:
         for i, band in enumerate(bands):
             retrieved[band.lower()] = iff(result['FLUX_' + band], result['FLUX_' + band], False)
             retrieved[band.lower() + '_err'] = iff(result['FLUX_ERROR_' + band], result['FLUX_ERROR_' + band], False)
-            retrieved[band.lower() + '_bib'] = iff(result['FLUX_BIBCODE_' + band], result['FLUX_BIBCODE_' + band].decode('utf-8'), False)
+            retrieved[band.lower() + '_bib'] = iff(result['FLUX_BIBCODE_' + band], result['FLUX_BIBCODE_' + band], False)
 
         for value in list(retrieved.keys()):
             if (type(retrieved[value]) == bool) and (not retrieved[value]):
