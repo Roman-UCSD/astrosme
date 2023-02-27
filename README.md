@@ -7,8 +7,9 @@ The code was developed by [Roman Gerasimov](https://cass.ucsd.edu/index.php/grad
 ## Literature
 
 1. Main paper: [Friedman+2020](https://ui.adsabs.harvard.edu/abs/2020PhRvD.102d3008F/abstract).
-2. Previous work on the subject: [Kislat+2017](https://ui.adsabs.harvard.edu/abs/2017PhRvD..95h3013K/abstract), [Kislat 2018](http://www.mdpi.com/2073-8994/10/11/596).
-3. General introduction to SME: [Kostelecký+2009](https://ui.adsabs.harvard.edu/abs/2009PhRvD..80a5020K/abstract).
+2. More general approach including circular polarimetry: [Gerasimov+2021](https://www.mdpi.com/2073-8994/13/5/880).
+3. Previous work on the subject: [Kislat+2017](https://ui.adsabs.harvard.edu/abs/2017PhRvD..95h3013K/abstract), [Kislat 2018](http://www.mdpi.com/2073-8994/10/11/596).
+4. General introduction to SME: [Kostelecký+2009](https://ui.adsabs.harvard.edu/abs/2009PhRvD..80a5020K/abstract).
 
 ## VizieR repository
 
